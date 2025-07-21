@@ -73,12 +73,15 @@ class JsonResult(BaseModel):
 class UserResponse(BaseModel):
   id: str
   coins: int
+  activeDays: Optional[int] = 0
+  lastActive: Optional[str] = None
 
   class Config:
     orm_mode = True
 
 class WasteDetectionResponse(BaseModel):
   id: str
+  base64: str
   latitude: float
   longitude: float
   date_taken: str
@@ -258,9 +261,14 @@ async def get_all_detections(skip: int = 0, limit: int = 100, db: Session = Depe
 			parsed_classes = json.loads(det.detected_classes) if det.detected_classes else []
 		except json.JSONDecodeError: parsed_classes = []
 		response_list.append(WasteDetectionResponse(
-			id=det.id, latitude=det.latitude, longitude=det.longitude,
-			date_taken=det.date_taken, user_id=det.user_id,
-			detected_classes=parsed_classes, status=det.status
+			id=det.id,
+   		base64=det.base64,
+			latitude=det.latitude,
+			longitude=det.longitude,
+			date_taken=det.date_taken,
+			user_id=det.user_id,
+			detected_classes=parsed_classes,
+			status=det.status
 		))
 	return response_list
 

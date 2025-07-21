@@ -3,7 +3,7 @@ from pydantic import BaseModel
 from dotenv import load_dotenv
 import json
 import os
-from typing import List
+from typing import List, Optional
 
 from sqlalchemy import create_engine, Column, Float, String, Integer, ForeignKey
 from sqlalchemy.orm import sessionmaker, Session, relationship
@@ -36,6 +36,8 @@ class WasteDetection(Base):
   owner = relationship("User", back_populates="detections")
   detected_classes = Column(String)
   status = Column(String, index=True)
+  
+
 
 Base.metadata.create_all(engine)
 
@@ -47,15 +49,17 @@ def get_db():
 		db.close()
 
 class UserResponse(BaseModel):
-	id: str
-	coins: int
+  id: str
+  coins: int
+  activeDays: Optional[int] = 0
+  lastActive: Optional[str] = None
 
-	class Config:
-		orm_mode = True
+class Config:
+	orm_mode = True
 
 class WasteDetectionResponse(BaseModel):
 	id: str
-	# base64: str
+	base64: str
 	latitude: float
 	longitude: float
 	date_taken: str
@@ -66,6 +70,14 @@ class WasteDetectionResponse(BaseModel):
 	class Config:
 		orm_mode = True
         
+class WasteDetectionSmallerResponse(BaseModel):
+	id: str
+	date_taken: str
+	user_id: str
+	status: str
+
+	class Config:
+		orm_mode = True
         
 @app.get("/users/", response_model=List[UserResponse])
 async def get_all_users_from_db_service(skip: int = 0, limit: int = 100, db: Session = Depends(get_db)):
@@ -90,7 +102,7 @@ async def get_all_detections_from_db_service(skip: int = 0, limit: int = 100, db
 			parsed_classes = []
 		response_list.append(WasteDetectionResponse(
 			id=det.id,
-   		# base64=det.base64,
+   		base64=det.base64,
 			latitude=det.latitude,
 			longitude=det.longitude,
 			date_taken=det.date_taken,
@@ -116,6 +128,7 @@ async def get_detections_by_user_from_db_service(user_id: str, skip: int = 0, li
 			parsed_classes = []
 		response_list.append(WasteDetectionResponse(
 			id=det.id,
+      base64=det.base64,
 			latitude=det.latitude,
 			longitude=det.longitude,
 			date_taken=det.date_taken,
@@ -136,6 +149,7 @@ async def get_detection_by_id_from_db_service(detection_id: str, db: Session = D
 		parsed_classes = []
 	return WasteDetectionResponse(
 		id=detection.id,
+		base64=detection.base64,
 		latitude=detection.latitude,
 		longitude=detection.longitude,
 		date_taken=detection.date_taken,
@@ -162,6 +176,28 @@ async def get_detections_by_status_from_db_service(status_value: str, skip: int 
 			date_taken=det.date_taken,
 			user_id=det.user_id,
 			detected_classes=parsed_classes,
+			status=det.status
+		))
+	return response_list
+
+@app.get("/detections_achievements/user/{user_id}", response_model=List[WasteDetectionSmallerResponse])
+async def get_detections_achievements_by_user_from_db_service(user_id: str, skip: int = 0, limit: int = 100, db: Session = Depends(get_db)):
+	detections = db.query(WasteDetection).filter(WasteDetection.user_id == user_id).offset(skip).limit(limit).all()
+	if not detections:
+		user = db.query(User).filter(User.id == user_id).first()
+		if not user:
+			raise HTTPException(status_code=404, detail=f"User not found with id: {user_id}")
+		return []
+	response_list = []
+	for det in detections:
+		try:
+			parsed_classes = json.loads(det.detected_classes) if det.detected_classes else []
+		except json.JSONDecodeError:
+			parsed_classes = []
+		response_list.append(WasteDetectionSmallerResponse(
+			id=det.id,
+			date_taken=det.date_taken,
+			user_id=det.user_id,
 			status=det.status
 		))
 	return response_list
