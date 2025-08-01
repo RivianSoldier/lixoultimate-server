@@ -3,9 +3,9 @@ from pydantic import BaseModel
 from dotenv import load_dotenv
 import json
 import os
-from typing import List, Optional
+from typing import List, Optional, Any
 
-from sqlalchemy import create_engine, Column, Float, String, Integer, ForeignKey
+from sqlalchemy import create_engine, Column, Float, String, Integer, ForeignKey, JSON
 from sqlalchemy.orm import sessionmaker, Session, relationship
 from sqlalchemy.ext.declarative import declarative_base
 
@@ -24,7 +24,7 @@ class User(Base):
   activeDays = Column(Integer, default=0)
   lastActive = Column(String, nullable=True) 
   detections = relationship("WasteDetection", back_populates="owner")
-    
+
 class WasteDetection(Base):
   __tablename__ = "waste_detections"
   id = Column(String, primary_key=True, index=True)
@@ -36,7 +36,8 @@ class WasteDetection(Base):
   owner = relationship("User", back_populates="detections")
   detected_classes = Column(String)
   status = Column(String, index=True)
-  
+  detection_points = Column(JSON, nullable=True)
+
 
 
 Base.metadata.create_all(engine)
@@ -66,7 +67,7 @@ class WasteDetectionResponse(BaseModel):
 	user_id: str
 	detected_classes: List[str]
 	status: str
-
+	detection_points: Optional[List[Any]] = None
 	class Config:
 		orm_mode = True
         
@@ -108,7 +109,8 @@ async def get_all_detections_from_db_service(skip: int = 0, limit: int = 100, db
 			date_taken=det.date_taken,
 			user_id=det.user_id,
 			detected_classes=parsed_classes,
-			status=det.status
+			status=det.status,
+			detection_points=det.detection_points
 		))
 	return response_list
 
@@ -134,7 +136,8 @@ async def get_detections_by_user_from_db_service(user_id: str, skip: int = 0, li
 			date_taken=det.date_taken,
 			user_id=det.user_id,
 			detected_classes=parsed_classes,
-			status=det.status
+			status=det.status,
+			detection_points=det.detection_points
 		))
 	return response_list
 
@@ -155,7 +158,8 @@ async def get_detection_by_id_from_db_service(detection_id: str, db: Session = D
 		date_taken=detection.date_taken,
 		user_id=detection.user_id,
 		detected_classes=parsed_classes,
-		status=detection.status
+		status=detection.status,
+		detection_points=detection.detection_points
 	)
 
 @app.get("/detections/status/{status_value}", response_model=List[WasteDetectionResponse])
@@ -176,7 +180,8 @@ async def get_detections_by_status_from_db_service(status_value: str, skip: int 
 			date_taken=det.date_taken,
 			user_id=det.user_id,
 			detected_classes=parsed_classes,
-			status=det.status
+			status=det.status,
+			detection_points=det.detection_points
 		))
 	return response_list
 

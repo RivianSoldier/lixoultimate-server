@@ -6,7 +6,7 @@ import json
 import base64
 import os
 from PIL import Image
-from typing import List, Optional
+from typing import List, Optional, Any
 
 import io
 from ultralytics import YOLO
@@ -15,7 +15,7 @@ from ultralytics.nn.modules.conv import Conv, Concat
 from ultralytics.nn.modules.block import C3k2, C3, SPPF, Bottleneck, C2f
 from ultralytics.nn.modules.head import Detect
 import torch.nn
-from sqlalchemy import create_engine, Column, Float, String, Integer, ForeignKey
+from sqlalchemy import create_engine, Column, Float, String, Integer, ForeignKey, JSON
 from sqlalchemy.orm import sessionmaker, Session, relationship
 from sqlalchemy.ext.declarative import declarative_base
 import uuid
@@ -50,6 +50,7 @@ class WasteDetection(Base):
   owner = relationship("User", back_populates="detections")
   detected_classes = Column(String)
   status = Column(String, index=True)
+  detection_points = Column(JSON, nullable=True)
 
 Base.metadata.create_all(engine)
 
@@ -88,7 +89,7 @@ class WasteDetectionResponse(BaseModel):
   user_id: str
   detected_classes: List[str]
   status: str
-
+  detection_points: Optional[List[Any]] = None
   class Config:
     orm_mode = True
 
@@ -139,35 +140,52 @@ async def record_user_active(request_data: UserActiveRequest, db: Session = Depe
 @app.post("/classify")
 async def classify_image(data: JsonResult, db: Session = Depends(get_db)):
 	if model is None:
-		raise HTTPException(status_code=503, detail="Model not loaded. Check service logs.")
+		raise HTTPException(status_code=503, detail="Modelo nao carregado.")
+	print("Dados recebidos para classificacao:", json.dumps(data.model_dump(), indent=2))
 
-	print("Received data for classification:", json.dumps(data.model_dump(), indent=2))
-	
 	try:
 		img_data = base64.b64decode(data.base64)
 		img = Image.open(io.BytesIO(img_data)).convert("RGB")
 	except Exception as e:
-		raise HTTPException(status_code=400, detail=f"Invalid base64 image data: {e}")
-	
+		raise HTTPException(status_code=400, detail=f"Dados de imagem base64 invalidos: {e}")
+
 	try:
 		results = model(img)
 	except Exception as e:
-		raise HTTPException(status_code=500, detail=f"Error during image processing: {e}")
+		raise HTTPException(status_code=500, detail=f"Erro durante processamento da imagem: {e}")
 
 	detected_classes_names = []
-	if results and results[0].boxes and results[0].boxes.cls is not None:
-		for res_box in results[0].boxes:
-			if res_box.cls is not None:
-				for cls_tensor in res_box.cls:
-					cls_index = int(cls_tensor.item())
-					if 0 <= cls_index < len(results[0].names):
-						detected_classes_names.append(results[0].names[cls_index])
-					else:
-						print(f"Warning: class index {cls_index} out of bounds for names list.")
-	
+	detection_points_data = []
+
+	print("DEBUG: Verificando tipo de results[0].masks:", type(results[0].masks))
+	if results[0].masks is not None:
+		print("DEBUG: Quantidade de mascaras encontradas:", len(results[0].masks))
+	else:
+		print("DEBUG: results[0].masks é None.")
+
+	if results and results[0].masks is not None:
+		print("DEBUG: Entrou no IF para processar as mascaras.")
+		for i, mask in enumerate(results[0].masks):
+			box = results[0].boxes[i]
+			cls_index = int(box.cls.item())
+			class_name = results[0].names[cls_index]
+			detected_classes_names.append(class_name)
+
+			contour_normalized = mask.xyn[0].tolist()
+
+			print(f"DEBUG: Adicionando contorno para a classe '{class_name}'")
+
+			detection_points_data.append({
+				"class_name": class_name,
+				"contour_normalized": contour_normalized
+			})
+
+	else:
+		print("Aviso: Nao foram encontradas as 'segmentation masks' nos resultados.")
+
 	current_status = "Recusada"
 	coins_to_award = 0
-	
+
 	user = db.query(User).filter(User.id == data.userId).first()
 	if not user:
 		print(f"Usuário {data.userId} nao encontrado, criando novo usuario.")
@@ -201,10 +219,12 @@ async def classify_image(data: JsonResult, db: Session = Depends(get_db)):
 		current_status = "Recusada"
 		print(f"Nenhum 'lixo' detectado e moedas insuficientes ({user.coins}). Definindo moedas para 0.")
 		user.coins = 0
-	
+
 	new_detection_id = str(uuid.uuid4())
 	try:
-		print(f"Attempting to save detection {new_detection_id} for user {user.id} with status '{current_status}'")
+
+		print("DEBUG: Dados de pontos a serem salvos:", detection_points_data)
+		print(f"Tentando salvar deteccao {new_detection_id} para usuario {user.id} com status '{current_status}'")
 		detection_db_entry = WasteDetection(
 			id=new_detection_id,
 			base64=data.base64,
@@ -214,11 +234,12 @@ async def classify_image(data: JsonResult, db: Session = Depends(get_db)):
 			user_id=user.id, 
 			detected_classes=json.dumps(detected_classes_names),
 			status=current_status,
+			detection_points=detection_points_data
 		)
 		db.add(detection_db_entry)
-		
+
 		db.commit()
-		print(f"Successfully committed detection {new_detection_id} and user updates for {user.id}.")
+		print(f"Deteccao {new_detection_id} adicionada com sucesso e usuario: {user.id} atualizado.")
 		db.refresh(detection_db_entry)
 		db.refresh(user)
 
@@ -227,7 +248,7 @@ async def classify_image(data: JsonResult, db: Session = Depends(get_db)):
 		print(f"!!! DATABASE ERROR ON SAVING DETECTION/UPDATING COINS FOR USER {user.id}: {type(e).__name__} - {str(e)}")
 		traceback.print_exc() 
 		raise HTTPException(status_code=500, detail=f"Database error on saving detection/coins: {str(e)}")
-	
+
 	return {
 		"id": new_detection_id,
 		"status": "success",
@@ -235,7 +256,8 @@ async def classify_image(data: JsonResult, db: Session = Depends(get_db)):
 		"detected_classes": detected_classes_names,
 		"classification_status": current_status,
 		"coins_awarded_this_time": coins_to_award,
-		"user_total_coins": user.coins 
+		"user_total_coins": user.coins,
+		"detection_points": detection_points_data
 	}
 
 
@@ -262,34 +284,40 @@ async def get_all_detections(skip: int = 0, limit: int = 100, db: Session = Depe
 		except json.JSONDecodeError: parsed_classes = []
 		response_list.append(WasteDetectionResponse(
 			id=det.id,
-   		base64=det.base64,
+			base64=det.base64,
 			latitude=det.latitude,
 			longitude=det.longitude,
 			date_taken=det.date_taken,
 			user_id=det.user_id,
 			detected_classes=parsed_classes,
-			status=det.status
+			status=det.status,
+			detection_points=det.detection_points
 		))
 	return response_list
 
 @app.get("/detections/user/{user_id}", response_model=List[WasteDetectionResponse])
 async def get_detections_by_user(user_id: str, skip: int = 0, limit: int = 100, db: Session = Depends(get_db)):
 	detections = db.query(WasteDetection).filter(WasteDetection.user_id == user_id).offset(skip).limit(limit).all()
-	if not detections: # Return empty list instead of 404 if user exists but has no detections
+	if not detections:
 		user = db.query(User).filter(User.id == user_id).first()
 		if not user:
 			raise HTTPException(status_code=404, detail=f"User not found with id: {user_id}")
 		return []
-			
+
 	response_list = []
 	for det in detections:
 		try:
 			parsed_classes = json.loads(det.detected_classes) if det.detected_classes else []
 		except json.JSONDecodeError: parsed_classes = []
 		response_list.append(WasteDetectionResponse(
-			id=det.id, latitude=det.latitude, longitude=det.longitude,
-			date_taken=det.date_taken, user_id=det.user_id,
-			detected_classes=parsed_classes, status=det.status
+			id=det.id,
+			latitude=det.latitude,
+			longitude=det.longitude,
+			date_taken=det.date_taken,
+			user_id=det.user_id,
+			detected_classes=parsed_classes,
+			status=det.status,
+			detection_points=det.detection_points
 		))
 	return response_list
 
@@ -302,9 +330,14 @@ async def get_detection_by_id(detection_id: str, db: Session = Depends(get_db)):
 		parsed_classes = json.loads(detection.detected_classes) if detection.detected_classes else []
 	except json.JSONDecodeError: parsed_classes = []
 	return WasteDetectionResponse(
-		id=detection.id, latitude=detection.latitude, longitude=detection.longitude,
-		date_taken=detection.date_taken, user_id=detection.user_id,
-		detected_classes=parsed_classes, status=detection.status
+		id=detection.id,
+		latitude=detection.latitude,
+		longitude=detection.longitude,
+		date_taken=detection.date_taken,
+		user_id=detection.user_id,
+		detected_classes=parsed_classes,
+		status=detection.status,
+		detection_points=detection.detection_points
 	)
 
 @app.get("/detections/status/{status_value}", response_model=List[WasteDetectionResponse])
@@ -318,8 +351,13 @@ async def get_detections_by_status(status_value: str, skip: int = 0, limit: int 
 			parsed_classes = json.loads(det.detected_classes) if det.detected_classes else []
 		except json.JSONDecodeError: parsed_classes = []
 		response_list.append(WasteDetectionResponse(
-			id=det.id, latitude=det.latitude, longitude=det.longitude,
-			date_taken=det.date_taken, user_id=det.user_id,
-			detected_classes=parsed_classes, status=det.status
+			id=det.id,
+			latitude=det.latitude,
+			longitude=det.longitude,
+			date_taken=det.date_taken,
+			user_id=det.user_id,
+			detected_classes=parsed_classes,
+			status=det.status,
+			detection_points=det.detection_points
 		))
 	return response_list
