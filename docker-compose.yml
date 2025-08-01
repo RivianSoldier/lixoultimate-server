@@ -9,7 +9,11 @@ services:
       - db
     networks:
       - app-network
-
+    deploy:
+      resources:
+        limits:
+          cpus: "1.5"
+          memory: 3G
   db_service:
     build: ./db_service
     ports:
@@ -20,22 +24,31 @@ services:
       - db
     networks:
       - app-network
-
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 2G
   db:
     image: postgres:latest
+    ports:
+      - "5432:5432"
     environment:
-      POSTGRES_USER: ${POSTGRES_USER}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
-      POSTGRES_DB: ${POSTGRES_DB}
+      - POSTGRES_USER=${POSTGRES_USER}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      - POSTGRES_DB=${POSTGRES_DB}
     volumes:
       - postgres_data:/var/lib/postgresql/data
     networks:
       - app-network
-
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 3G
 networks:
   app-network:
     driver: bridge
-
 volumes:
   postgres_data:
     driver: local
