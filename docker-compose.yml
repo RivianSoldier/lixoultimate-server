@@ -1,3 +1,59 @@
+# services:
+#   image_service:
+#     build: ./image_service
+#     ports:
+#       - "5000:5000"
+#     environment:
+#       - DATABASE_URL=${DATABASE_URL}
+#     depends_on:
+#       - db
+#     networks:
+#       - app-network
+#     deploy:
+#       resources:
+#         limits:
+#           cpus: "1.5"
+#           memory: 3G
+#   db_service:
+#     build: ./db_service
+#     ports:
+#       - "5001:5001"
+#     environment:
+#       - DATABASE_URL=${DATABASE_URL}
+#     depends_on:
+#       - db
+#     networks:
+#       - app-network
+#     deploy:
+#       resources:
+#         limits:
+#           cpus: "1.0"
+#           memory: 2G
+#   db:
+#     image: postgres:latest
+#     ports:
+#       - "5432:5432"
+#     environment:
+#       - POSTGRES_USER=${POSTGRES_USER}
+#       - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+#       - POSTGRES_DB=${POSTGRES_DB}
+#     volumes:
+#       - postgres_data:/var/lib/postgresql/data
+#     networks:
+#       - app-network
+#     deploy:
+#       resources:
+#         limits:
+#           cpus: "1.0"
+#           memory: 3G
+# networks:
+#   app-network:
+#     driver: bridge
+# volumes:
+#   postgres_data:
+#     driver: local
+
+
 services:
   image_service:
     build: ./image_service
@@ -6,14 +62,14 @@ services:
     environment:
       - DATABASE_URL=${DATABASE_URL}
     depends_on:
-      - db
+      db:
+        condition: service_healthy
     networks:
       - app-network
-    deploy:
-      resources:
-        limits:
-          cpus: "1.5"
-          memory: 3G
+    restart: unless-stopped
+    mem_limit: 4g
+    cpus: '2.0'
+
   db_service:
     build: ./db_service
     ports:
@@ -21,34 +77,37 @@ services:
     environment:
       - DATABASE_URL=${DATABASE_URL}
     depends_on:
-      - db
+      db:
+        condition: service_healthy
     networks:
       - app-network
-    deploy:
-      resources:
-        limits:
-          cpus: "1.0"
-          memory: 2G
+    restart: unless-stopped
+    mem_limit: 2g
+    cpus: '1.0'
+
   db:
     image: postgres:latest
-    ports:
-      - "5432:5432"
     environment:
-      - POSTGRES_USER=${POSTGRES_USER}
-      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
-      - POSTGRES_DB=${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
     volumes:
       - postgres_data:/var/lib/postgresql/data
     networks:
       - app-network
-    deploy:
-      resources:
-        limits:
-          cpus: "1.0"
-          memory: 3G
+    restart: unless-stopped
+    mem_limit: 4g
+    cpus: '1.0'
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
 networks:
   app-network:
     driver: bridge
+
 volumes:
   postgres_data:
     driver: local
