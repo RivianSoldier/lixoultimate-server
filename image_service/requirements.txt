@@ -9,3 +9,5 @@ sqlalchemy==2.0.31
 psycopg2-binary==2.9.9
 uuid==1.30
 gunicorn==22.0.0
+opencv-python==4.10.0.84
+numpy==1.26.4
