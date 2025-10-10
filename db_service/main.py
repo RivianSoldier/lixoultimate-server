@@ -4,6 +4,9 @@ from dotenv import load_dotenv
 import json
 import os
 from typing import List, Optional, Any
+import base64
+import io
+from PIL import Image
 
 from sqlalchemy import create_engine, Column, Float, String, Integer, ForeignKey
 from sqlalchemy.orm import sessionmaker, Session, relationship
@@ -48,6 +51,52 @@ def get_db():
     finally:
         db.close()
 
+def compress_base64_image(base64_str: str, quality: int = 60, max_size: tuple = (1024, 1024)) -> str:
+    """
+    Compress a base64 encoded image.
+    
+    Args:
+        base64_str: Base64 encoded image string (with or without data URI prefix)
+        quality: JPEG quality (1-100, lower = smaller file)
+        max_size: Maximum dimensions (width, height) to resize to
+    
+    Returns:
+        Compressed base64 string with data URI prefix
+    """
+    try:
+        if base64_str.startswith('data:image'):
+            header, base64_data = base64_str.split(',', 1)
+        else:
+            base64_data = base64_str
+            header = None
+        
+        img_data = base64.b64decode(base64_data)
+        img = Image.open(io.BytesIO(img_data))
+        
+        if img.mode in ('RGBA', 'LA', 'P'):
+            background = Image.new('RGB', img.size, (255, 255, 255))
+            if img.mode == 'P':
+                img = img.convert('RGBA')
+            background.paste(img, mask=img.split()[-1] if img.mode in ('RGBA', 'LA') else None)
+            img = background
+        elif img.mode != 'RGB':
+            img = img.convert('RGB')
+        
+        if img.width > max_size[0] or img.height > max_size[1]:
+            img.thumbnail(max_size, Image.LANCZOS)
+        
+        buffer = io.BytesIO()
+        img.save(buffer, format='JPEG', quality=quality, optimize=True)
+        buffer.seek(0)
+        
+        compressed_base64 = base64.b64encode(buffer.read()).decode('utf-8')
+        
+        return f"data:image/jpeg;base64,{compressed_base64}"
+    
+    except Exception as e:
+        print(f"Image compression failed: {e}")
+        return base64_str if base64_str.startswith('data:image') else f"data:image/jpeg;base64,{base64_str}"
+
 class UserResponse(BaseModel):
     id: str
     coins: int
@@ -90,7 +139,7 @@ class WasteDetectionMapResponse(BaseModel):
     lng: float
     foto: str
     classes: List[ClassCount]
-    detection_points: Optional[dict] = None
+    detection_points: Optional[Any] = None
 
     class Config:
         from_attributes = True
@@ -116,9 +165,12 @@ async def get_all_detections_from_db_service(skip: int = 0, limit: int = 100, db
             parsed_classes = json.loads(det.detected_classes) if det.detected_classes else []
         except json.JSONDecodeError:
             parsed_classes = []
+        
+        compressed_image = compress_base64_image(det.base64, quality=70, max_size=(1024, 1024))
+        
         response_list.append(WasteDetectionResponse(
             id=det.id,
-            base64=det.base64,
+            base64=compressed_image,
             latitude=det.latitude,
             longitude=det.longitude,
             date_taken=det.date_taken,
@@ -143,9 +195,12 @@ async def get_detections_by_user_from_db_service(user_id: str, skip: int = 0, li
             parsed_classes = json.loads(det.detected_classes) if det.detected_classes else []
         except json.JSONDecodeError:
             parsed_classes = []
+        
+        compressed_image = compress_base64_image(det.base64, quality=70, max_size=(1024, 1024))
+        
         response_list.append(WasteDetectionResponse(
             id=det.id,
-            base64=det.base64,
+            base64=compressed_image,
             latitude=det.latitude,
             longitude=det.longitude,
             date_taken=det.date_taken,
@@ -166,10 +221,12 @@ async def get_detection_by_id_from_db_service(detection_id: str, db: Session = D
         parsed_classes = json.loads(detection.detected_classes) if detection.detected_classes else []
     except json.JSONDecodeError:
         parsed_classes = []
+    
+    compressed_image = compress_base64_image(detection.base64, quality=75, max_size=(1280, 1280))
 
     return WasteDetectionResponse(
         id=detection.id,
-        base64=detection.base64,
+        base64=compressed_image,
         latitude=detection.latitude,
         longitude=detection.longitude,
         date_taken=detection.date_taken,
@@ -190,9 +247,12 @@ async def get_detections_by_status_from_db_service(status_value: str, skip: int 
             parsed_classes = json.loads(det.detected_classes) if det.detected_classes else []
         except json.JSONDecodeError:
             parsed_classes = []
+        
+        compressed_image = compress_base64_image(det.base64, quality=70, max_size=(1024, 1024))
+        
         response_list.append(WasteDetectionResponse(
             id=det.id,
-            base64=det.base64,
+            base64=compressed_image,
             latitude=det.latitude,
             longitude=det.longitude,
             date_taken=det.date_taken,
@@ -241,11 +301,13 @@ async def get_detections_for_map(status_value: str, skip: int = 0, limit: int = 
             ClassCount(nome="metal", quantidade=class_counts["metal"])
         ]
         
+        compressed_image = compress_base64_image(det.base64, quality=50, max_size=(800, 800))
+        
         response_list.append(WasteDetectionMapResponse(
             id=det.id,
             lat=det.latitude,
             lng=det.longitude,
-            foto=det.base64,
+            foto=compressed_image,
             classes=classes,
             detection_points=det.detection_points
         ))
