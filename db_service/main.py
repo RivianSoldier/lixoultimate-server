@@ -1,4 +1,5 @@
-from fastapi import FastAPI, HTTPException, Depends
+from fastapi import FastAPI, HTTPException, Depends, Request
+from fastapi.responses import RedirectResponse
 from pydantic import BaseModel
 from dotenv import load_dotenv
 import json
@@ -91,11 +92,15 @@ def compress_base64_image(base64_str: str, quality: int = 60, max_size: tuple = 
         
         compressed_base64 = base64.b64encode(buffer.read()).decode('utf-8')
         
-        return f"data:image/jpeg;base64,{compressed_base64}"
+        # Return just the base64 string without prefix (frontend will add it if needed)
+        return compressed_base64
     
     except Exception as e:
         print(f"Image compression failed: {e}")
-        return base64_str if base64_str.startswith('data:image') else f"data:image/jpeg;base64,{base64_str}"
+        # Return original format on error - strip prefix if present
+        if base64_str.startswith('data:image'):
+            return base64_str.split(',', 1)[1]
+        return base64_str
 
 class UserResponse(BaseModel):
     id: str
@@ -313,3 +318,4 @@ async def get_detections_for_map(status_value: str, skip: int = 0, limit: int = 
         ))
     
     return response_list
+

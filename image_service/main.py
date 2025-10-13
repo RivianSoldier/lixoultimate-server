@@ -1,5 +1,6 @@
 from datetime import date
-from fastapi import FastAPI, HTTPException, Depends, BackgroundTasks
+from fastapi import FastAPI, HTTPException, Depends, BackgroundTasks, Request
+from fastapi.responses import RedirectResponse, HTMLResponse
 from pydantic import BaseModel
 from dotenv import load_dotenv
 import json
@@ -482,3 +483,58 @@ async def get_detections_by_status(status_value: str, skip: int = 0, limit: int 
             detection_points=det.detection_points
         ))
     return response_list
+
+@app.get("/auth/callback")
+async def oauth_callback(request: Request):
+    """
+    OAuth callback endpoint for Google authentication via Appwrite.
+    Returns HTML page that redirects to app deep link using JavaScript.
+    """
+    try:
+        user_id = request.query_params.get('userId')
+        secret = request.query_params.get('secret')
+        
+        if not user_id or not secret:
+            deep_link = 'lixoultimate://localhost/?error=missing_credentials'
+        else:
+            deep_link = f'lixoultimate://localhost/?userId={user_id}&secret={secret}'
+        
+        # Return HTML page with JavaScript redirect
+        html_content = f"""
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <title>Redirecting...</title>
+            <meta charset="UTF-8">
+        </head>
+        <body>
+            <h1>Autenticação bem-sucedida!</h1>
+            <p>Redirecionando para o aplicativo...</p>
+            <script>
+                window.location.href = '{deep_link}';
+            </script>
+        </body>
+        </html>
+        """
+        
+        return HTMLResponse(content=html_content, status_code=200)
+        
+    except Exception as e:
+        print(f"OAuth callback error: {e}")
+        html_content = f"""
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <title>Error</title>
+            <meta charset="UTF-8">
+        </head>
+        <body>
+            <h1>Erro na autenticação</h1>
+            <p>Ocorreu um erro. Tente novamente.</p>
+            <script>
+                window.location.href = 'lixoultimate://localhost/?error=callback_failed';
+            </script>
+        </body>
+        </html>
+        """
+        return HTMLResponse(content=html_content, status_code=200)
