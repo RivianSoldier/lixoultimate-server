@@ -8,14 +8,25 @@ from typing import List, Optional, Any
 import base64
 import io
 from PIL import Image
-
 from sqlalchemy import create_engine, Column, Float, String, Integer, ForeignKey
 from sqlalchemy.orm import sessionmaker, Session, relationship
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.types import JSON
 
+from fastapi.middleware.cors import CORSMiddleware
+
+
 load_dotenv()
 app = FastAPI()
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # In production, replace with specific origins
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 
 DATABASE_URL = os.getenv("DATABASE_URL")
 engine = create_engine(DATABASE_URL)
@@ -28,7 +39,7 @@ class User(Base):
     coins = Column(Integer, default=0)
     activeDays = Column(Integer, default=0)
     lastActive = Column(String, nullable=True)
-    detections = relationship("WasteDetection", back_populates="owner")
+    detections = relationship("WasteDetection", back_populates="owner", foreign_keys="[WasteDetection.user_id]")
 
 class WasteDetection(Base):
     __tablename__ = "waste_detections"
@@ -38,10 +49,12 @@ class WasteDetection(Base):
     longitude = Column(Float)
     date_taken = Column(String)
     user_id = Column(String, ForeignKey("users.id"), index=True)
-    owner = relationship("User", back_populates="detections")
+    owner = relationship("User", back_populates="detections", foreign_keys="[WasteDetection.user_id]")
     detected_classes = Column(String)
     status = Column(String, index=True)
     detection_points = Column(JSON, nullable=True)
+    collected_by = Column(String, ForeignKey("users.id"), nullable=True, index=True)
+    collection_date = Column(String, nullable=True)
 
 Base.metadata.create_all(engine)
 
@@ -121,6 +134,8 @@ class WasteDetectionResponse(BaseModel):
     detected_classes: List[str]
     status: str
     detection_points: Optional[Any] = None
+    collected_by: Optional[str] = None
+    collection_date: Optional[str] = None
 
     class Config:
         from_attributes = True
@@ -137,6 +152,17 @@ class WasteDetectionSmallerResponse(BaseModel):
 class ClassCount(BaseModel):
     nome: str
     quantidade: int
+
+class CollectionRequest(BaseModel):
+    collector_user_id: str
+
+class CollectionResponse(BaseModel):
+    success: bool
+    detection_id: str
+    status: str
+    collected_by: str
+    collection_date: str
+    message: str
 
 class WasteDetectionMapResponse(BaseModel):
     id: str
@@ -182,7 +208,9 @@ async def get_all_detections_from_db_service(skip: int = 0, limit: int = 100, db
             user_id=det.user_id,
             detected_classes=parsed_classes,
             status=det.status,
-            detection_points=det.detection_points
+            detection_points=det.detection_points,
+            collected_by=det.collected_by,
+            collection_date=det.collection_date
         ))
     return response_list
 
@@ -212,7 +240,9 @@ async def get_detections_by_user_from_db_service(user_id: str, skip: int = 0, li
             user_id=det.user_id,
             detected_classes=parsed_classes,
             status=det.status,
-            detection_points=det.detection_points
+            detection_points=det.detection_points,
+            collected_by=det.collected_by,
+            collection_date=det.collection_date
         ))
     return response_list
 
@@ -238,13 +268,15 @@ async def get_detection_by_id_from_db_service(detection_id: str, db: Session = D
         user_id=detection.user_id,
         detected_classes=parsed_classes,
         status=detection.status,
-        detection_points=detection.detection_points
+        detection_points=detection.detection_points,
+        collected_by=detection.collected_by,
+        collection_date=detection.collection_date
     )
 
 @app.get("/detections/status/{status_value}", response_model=List[WasteDetectionResponse])
 async def get_detections_by_status_from_db_service(status_value: str, skip: int = 0, limit: int = 100, db: Session = Depends(get_db)):
-    if status_value not in ["A coletar", "Recusada"]:
-        raise HTTPException(status_code=400, detail="Invalid status value. Must be 'A coletar' or 'Recusada'.")
+    if status_value not in ["A coletar", "Recusada", "Coletado"]:
+        raise HTTPException(status_code=400, detail="Invalid status value. Must be 'A coletar', 'Recusada', or 'Coletado'.")
     detections = db.query(WasteDetection).filter(WasteDetection.status == status_value).offset(skip).limit(limit).all()
     response_list = []
     for det in detections:
@@ -264,7 +296,9 @@ async def get_detections_by_status_from_db_service(status_value: str, skip: int 
             user_id=det.user_id,
             detected_classes=parsed_classes,
             status=det.status,
-            detection_points=det.detection_points
+            detection_points=det.detection_points,
+            collected_by=det.collected_by,
+            collection_date=det.collection_date
         ))
     return response_list
 
@@ -315,6 +349,126 @@ async def get_detections_for_map(status_value: str, skip: int = 0, limit: int = 
             foto=compressed_image,
             classes=classes,
             detection_points=det.detection_points
+        ))
+    
+    return response_list
+
+@app.post("/detections/{detection_id}/collect", response_model=CollectionResponse)
+async def collect_waste(detection_id: str, request: CollectionRequest, db: Session = Depends(get_db)):
+    """
+    Mark a waste detection as collected.
+    Changes status to 'Coletado' and records collector info.
+    This action is permanent and cannot be undone.
+    Collector does not need to be a registered user.
+    """
+    # Verify detection exists
+    detection = db.query(WasteDetection).filter(WasteDetection.id == detection_id).first()
+    if not detection:
+        raise HTTPException(status_code=404, detail=f"Detection not found: {detection_id}")
+    
+    # Verify status is "A coletar"
+    if detection.status != "A coletar":
+        raise HTTPException(
+            status_code=400, 
+            detail=f"Cannot collect detection with status '{detection.status}'. Only 'A coletar' detections can be collected."
+        )
+    
+    # Update detection status and collection info
+    from datetime import datetime
+    detection.status = "Coletado"
+    detection.collected_by = request.collector_user_id
+    detection.collection_date = datetime.now().isoformat()
+    
+    try:
+        db.commit()
+        db.refresh(detection)
+        print(f"✅ Detection {detection_id} collected by {request.collector_user_id}")
+    except Exception as e:
+        db.rollback()
+        print(f"!!! DATABASE ERROR during collection: {type(e).__name__} - {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to record collection: {str(e)}")
+    
+    return CollectionResponse(
+        success=True,
+        detection_id=detection.id,
+        status=detection.status,
+        collected_by=detection.collected_by,
+        collection_date=detection.collection_date,
+        message="Waste successfully marked as collected"
+    )
+
+@app.get("/collections/user/{user_id}", response_model=List[WasteDetectionResponse])
+async def get_user_collections(user_id: str, skip: int = 0, limit: int = 100, db: Session = Depends(get_db)):
+    """
+    Get all waste detections collected by a specific user.
+    Returns personalized collection history.
+    """
+    # Verify user exists
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail=f"User not found: {user_id}")
+    
+    # Get all detections collected by this user
+    detections = db.query(WasteDetection).filter(
+        WasteDetection.collected_by == user_id
+    ).offset(skip).limit(limit).all()
+    
+    response_list = []
+    for det in detections:
+        try:
+            parsed_classes = json.loads(det.detected_classes) if det.detected_classes else []
+        except json.JSONDecodeError:
+            parsed_classes = []
+        
+        compressed_image = compress_base64_image(det.base64, quality=70, max_size=(1024, 1024))
+        
+        response_list.append(WasteDetectionResponse(
+            id=det.id,
+            base64=compressed_image,
+            latitude=det.latitude,
+            longitude=det.longitude,
+            date_taken=det.date_taken,
+            user_id=det.user_id,
+            detected_classes=parsed_classes,
+            status=det.status,
+            detection_points=det.detection_points,
+            collected_by=det.collected_by,
+            collection_date=det.collection_date
+        ))
+    
+    return response_list
+
+@app.get("/detections/available", response_model=List[WasteDetectionResponse])
+async def get_available_detections(skip: int = 0, limit: int = 100, db: Session = Depends(get_db)):
+    """
+    Get all waste detections available for collection.
+    Returns only detections with status 'A coletar' (not yet collected).
+    """
+    detections = db.query(WasteDetection).filter(
+        WasteDetection.status == "A coletar"
+    ).offset(skip).limit(limit).all()
+    
+    response_list = []
+    for det in detections:
+        try:
+            parsed_classes = json.loads(det.detected_classes) if det.detected_classes else []
+        except json.JSONDecodeError:
+            parsed_classes = []
+        
+        compressed_image = compress_base64_image(det.base64, quality=70, max_size=(1024, 1024))
+        
+        response_list.append(WasteDetectionResponse(
+            id=det.id,
+            base64=compressed_image,
+            latitude=det.latitude,
+            longitude=det.longitude,
+            date_taken=det.date_taken,
+            user_id=det.user_id,
+            detected_classes=parsed_classes,
+            status=det.status,
+            detection_points=det.detection_points,
+            collected_by=det.collected_by,
+            collection_date=det.collection_date
         ))
     
     return response_list

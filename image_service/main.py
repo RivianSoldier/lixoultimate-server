@@ -28,9 +28,21 @@ import traceback
 
 from sqlalchemy.types import JSON
 
+from fastapi.middleware.cors import CORSMiddleware
+
+
+
 
 load_dotenv()
 app = FastAPI()
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # In production, replace with specific origins
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 DATABASE_URL = os.getenv("DATABASE_URL")
 engine = create_engine(DATABASE_URL)
@@ -43,7 +55,7 @@ class User(Base):
   coins = Column(Integer, default=0)
   activeDays = Column(Integer, default=0)
   lastActive = Column(String, nullable=True) 
-  detections = relationship("WasteDetection", back_populates="owner")
+  detections = relationship("WasteDetection", back_populates="owner", foreign_keys="[WasteDetection.user_id]")
 
 class WasteDetection(Base):
   __tablename__ = "waste_detections"
@@ -53,10 +65,12 @@ class WasteDetection(Base):
   longitude = Column(Float)
   date_taken = Column(String)
   user_id = Column(String, ForeignKey("users.id"), index=True)
-  owner = relationship("User", back_populates="detections")
+  owner = relationship("User", back_populates="detections", foreign_keys="[WasteDetection.user_id]")
   detected_classes = Column(String)
   status = Column(String, index=True)
   detection_points = Column(JSON, nullable=True)
+  collected_by = Column(String, ForeignKey("users.id"), nullable=True, index=True)
+  collection_date = Column(String, nullable=True)
 
 Base.metadata.create_all(engine)
 
