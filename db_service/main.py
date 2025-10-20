@@ -12,6 +12,8 @@ from sqlalchemy import create_engine, Column, Float, String, Integer, ForeignKey
 from sqlalchemy.orm import sessionmaker, Session, relationship
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.types import JSON
+from datetime import datetime
+
 
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -160,8 +162,10 @@ class CollectionResponse(BaseModel):
     success: bool
     detection_id: str
     status: str
-    collected_by: str
-    collection_date: str
+    collected_by: Optional[str] = None
+    collection_date: Optional[str] = None
+    not_found_by: Optional[str] = None
+    not_found_date: Optional[str] = None
     message: str
 
 class WasteDetectionMapResponse(BaseModel):
@@ -374,7 +378,6 @@ async def collect_waste(detection_id: str, request: CollectionRequest, db: Sessi
         )
     
     # Update detection status and collection info
-    from datetime import datetime
     detection.status = "Coletado"
     detection.collected_by = request.collector_user_id
     detection.collection_date = datetime.now().isoformat()
@@ -395,6 +398,48 @@ async def collect_waste(detection_id: str, request: CollectionRequest, db: Sessi
         collected_by=detection.collected_by,
         collection_date=detection.collection_date,
         message="Waste successfully marked as collected"
+    )
+    
+@app.post("/detections/{detection_id}/not_found", response_model=CollectionResponse)
+async def mark_detection_not_found(detection_id: str, request: CollectionRequest, db: Session = Depends(get_db)):
+    """
+    Mark a waste detection as not found.
+    Changes status to 'Não encontrado' and records user info.
+    This action is permanent and cannot be undone.
+    """
+    # Verify detection exists
+    detection = db.query(WasteDetection).filter(WasteDetection.id == detection_id).first()
+    if not detection:
+        raise HTTPException(status_code=404, detail=f"Detection not found: {detection_id}")
+
+    # Verify status is "A coletar"
+    if detection.status != "A coletar":
+        raise HTTPException(
+            status_code=400,
+            detail=f"Cannot mark detection as not found with status '{detection.status}'. Only 'A coletar' detections can be marked as not found."
+        )
+
+    # Update detection status and not found info
+    detection.status = "Não encontrado"
+    detection.not_found_by = request.collector_user_id
+    detection.not_found_date = datetime.now().isoformat()
+
+    try:
+        db.commit()
+        db.refresh(detection)
+        print(f"✅ Detection {detection_id} marked as not found by {request.collector_user_id}")
+    except Exception as e:
+        db.rollback()
+        print(f"!!! DATABASE ERROR during not found marking: {type(e).__name__} - {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to record not found: {str(e)}")
+
+    return CollectionResponse(
+        success=True,
+        detection_id=detection.id,
+        status=detection.status,
+        not_found_by=detection.not_found_by,
+        not_found_date=detection.not_found_date,
+        message="Waste successfully marked as not found"
     )
 
 @app.get("/collections/user/{user_id}", response_model=List[WasteDetectionResponse])
