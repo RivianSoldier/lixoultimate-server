@@ -55,8 +55,10 @@ class WasteDetection(Base):
     detected_classes = Column(String)
     status = Column(String, index=True)
     detection_points = Column(JSON, nullable=True)
-    collected_by = Column(String, ForeignKey("users.id"), nullable=True, index=True)
+    collected_by = Column(String, nullable=True, index=True)
     collection_date = Column(String, nullable=True)
+    not_found_by = Column(String, nullable=True, index=True)
+    not_found_date = Column(String, nullable=True)
 
 Base.metadata.create_all(engine)
 
@@ -175,6 +177,19 @@ class WasteDetectionMapResponse(BaseModel):
     foto: str
     classes: List[ClassCount]
     detection_points: Optional[Any] = None
+
+    class Config:
+        from_attributes = True
+
+class CollectorActivityResponse(BaseModel):
+    id: str
+    foto: str
+    classes: List[ClassCount]
+    lat: float
+    lng: float
+    date: str
+    status: str
+    dataColetado: Optional[str] = None
 
     class Config:
         from_attributes = True
@@ -357,7 +372,7 @@ async def get_detections_for_map(status_value: str, skip: int = 0, limit: int = 
     
     return response_list
 
-@app.post("/detections/{detection_id}/collect", response_model=CollectionResponse)
+@app.api_route("/detections/{detection_id}/collect", methods=["POST", "PUT"], response_model=CollectionResponse)
 async def collect_waste(detection_id: str, request: CollectionRequest, db: Session = Depends(get_db)):
     """
     Mark a waste detection as collected.
@@ -400,7 +415,7 @@ async def collect_waste(detection_id: str, request: CollectionRequest, db: Sessi
         message="Waste successfully marked as collected"
     )
     
-@app.post("/detections/{detection_id}/not_found", response_model=CollectionResponse)
+@app.api_route("/detections/{detection_id}/not_found", methods=["POST", "PUT"], response_model=CollectionResponse)
 async def mark_detection_not_found(detection_id: str, request: CollectionRequest, db: Session = Depends(get_db)):
     """
     Mark a waste detection as not found.
@@ -514,6 +529,75 @@ async def get_available_detections(skip: int = 0, limit: int = 100, db: Session 
             detection_points=det.detection_points,
             collected_by=det.collected_by,
             collection_date=det.collection_date
+        ))
+    
+    return response_list
+
+@app.get("/collector/activity/{collector_id}", response_model=List[CollectorActivityResponse])
+async def get_collector_activity(collector_id: str, skip: int = 0, limit: int = 100, db: Session = Depends(get_db)):
+    """
+    Get all waste detections that a collector has either collected or marked as not found.
+    Returns activity history with simplified format for frontend display.
+    """
+    from sqlalchemy import or_
+    
+    # Get all detections where this person was the collector or marked as not found
+    detections = db.query(WasteDetection).filter(
+        or_(
+            WasteDetection.collected_by == collector_id,
+            WasteDetection.not_found_by == collector_id
+        )
+    ).offset(skip).limit(limit).all()
+    
+    response_list = []
+    for det in detections:
+        # Extract class counts from detection_points
+        class_counts = {"papel": 0, "plastico": 0, "vidro": 0, "metal": 0}
+        
+        if det.detection_points and isinstance(det.detection_points, dict):
+            if "class_counts" in det.detection_points:
+                stored_counts = det.detection_points["class_counts"]
+                for class_name in ["papel", "plastico", "vidro", "metal"]:
+                    class_counts[class_name] = stored_counts.get(class_name, 0)
+        
+        # Build classes list (only include classes with count > 0)
+        classes = []
+        class_name_map = {
+            "papel": "Papel",
+            "plastico": "Plástico",
+            "vidro": "Vidro",
+            "metal": "Metal"
+        }
+        for class_name, count in class_counts.items():
+            if count > 0:
+                classes.append(ClassCount(
+                    nome=class_name_map[class_name],
+                    quantidade=count
+                ))
+        
+        # If no classes detected, add a generic "Lixo" entry
+        if not classes:
+            classes.append(ClassCount(nome="Lixo", quantidade=1))
+        
+        # Compress image for frontend
+        compressed_image = compress_base64_image(det.base64, quality=50, max_size=(800, 800))
+        
+        # Determine the action date (collection_date or not_found_date)
+        data_coletado = None
+        if det.status == "Coletado" and det.collection_date:
+            data_coletado = det.collection_date
+        elif det.status == "Não encontrado" and det.not_found_date:
+            data_coletado = det.not_found_date
+        
+        response_list.append(CollectorActivityResponse(
+            id=det.id,
+            foto=compressed_image,
+            classes=classes,
+            lat=det.latitude,
+            lng=det.longitude,
+            date=det.date_taken,
+            status=det.status,
+            dataColetado=data_coletado
         ))
     
     return response_list
