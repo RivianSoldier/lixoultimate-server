@@ -190,6 +190,7 @@ class CollectorActivityResponse(BaseModel):
     id: str
     foto: str
     classes: List[ClassCount]
+    detection_points: Optional[Any] = None
     lat: float
     lng: float
     date: str
@@ -599,6 +600,7 @@ async def get_collector_activity(collector_id: str, skip: int = 0, limit: int = 
             id=det.id,
             foto=compressed_image,
             classes=classes,
+            detection_points=det.detection_points,
             lat=det.latitude,
             lng=det.longitude,
             date=det.date_taken,
