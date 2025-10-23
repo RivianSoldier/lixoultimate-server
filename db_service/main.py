@@ -55,9 +55,13 @@ class WasteDetection(Base):
     detected_classes = Column(String)
     status = Column(String, index=True)
     detection_points = Column(JSON, nullable=True)
-    collected_by = Column(String, nullable=True, index=True)
+    
+    # Existing columns
+    collected_by = Column(String, ForeignKey("users.id"), nullable=True, index=True)
     collection_date = Column(String, nullable=True)
-    not_found_by = Column(String, nullable=True, index=True)
+
+    # --- ADD THESE TWO LINES ---
+    not_found_by = Column(String, ForeignKey("users.id"), nullable=True, index=True)
     not_found_date = Column(String, nullable=True)
 
 Base.metadata.create_all(engine)
@@ -177,10 +181,11 @@ class WasteDetectionMapResponse(BaseModel):
     foto: str
     classes: List[ClassCount]
     detection_points: Optional[Any] = None
+    date: str  # Campo de data adicionado para o frontend
 
     class Config:
         from_attributes = True
-
+        
 class CollectorActivityResponse(BaseModel):
     id: str
     foto: str
@@ -367,12 +372,13 @@ async def get_detections_for_map(status_value: str, skip: int = 0, limit: int = 
             lng=det.longitude,
             foto=compressed_image,
             classes=classes,
-            detection_points=det.detection_points
+            detection_points=det.detection_points,
+            date=det.date_taken  # Adicionando o campo de data da detecção
         ))
     
     return response_list
 
-@app.api_route("/detections/{detection_id}/collect", methods=["POST", "PUT"], response_model=CollectionResponse)
+@app.post("/detections/{detection_id}/collect", response_model=CollectionResponse)
 async def collect_waste(detection_id: str, request: CollectionRequest, db: Session = Depends(get_db)):
     """
     Mark a waste detection as collected.
@@ -415,7 +421,7 @@ async def collect_waste(detection_id: str, request: CollectionRequest, db: Sessi
         message="Waste successfully marked as collected"
     )
     
-@app.api_route("/detections/{detection_id}/not_found", methods=["POST", "PUT"], response_model=CollectionResponse)
+@app.post("/detections/{detection_id}/not_found", response_model=CollectionResponse)
 async def mark_detection_not_found(detection_id: str, request: CollectionRequest, db: Session = Depends(get_db)):
     """
     Mark a waste detection as not found.
@@ -601,4 +607,3 @@ async def get_collector_activity(collector_id: str, skip: int = 0, limit: int = 
         ))
     
     return response_list
-
