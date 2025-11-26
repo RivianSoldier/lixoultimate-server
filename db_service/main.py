@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException, Depends, Request
+from fastapi import FastAPI, HTTPException, Depends, Request, Response
 from fastapi.responses import RedirectResponse, StreamingResponse
 from pydantic import BaseModel
 from dotenv import load_dotenv
@@ -292,13 +292,36 @@ async def get_all_detections_from_db_service(skip: int = 0, limit: int = 100, db
     return response_list
 
 @app.get("/detections/user/{user_id}", response_model=List[WasteDetectionResponse])
-async def get_detections_by_user_from_db_service(user_id: str, skip: int = 0, limit: int = 100, db: Session = Depends(get_db)):
-    detections = db.query(WasteDetection).filter(WasteDetection.user_id == user_id).offset(skip).limit(limit).all()
-    if not detections:
+async def get_detections_by_user_from_db_service(
+    user_id: str, 
+    skip: int = 0, 
+    limit: int = 10, 
+    response: Response = None,
+    db: Session = Depends(get_db)
+):
+    """
+    Get detections by user with pagination and ordering (newest first).
+    Default limit changed to 10 for faster initial load.
+    Use skip/limit params for pagination (e.g., skip=10 for next 10 items).
+    Returns X-Total-Count header with total number of detections.
+    """
+    # Get total count for response header
+    total_count = db.query(WasteDetection).filter(WasteDetection.user_id == user_id).count()
+    
+    # Query with ordering by date_taken DESC (newest first)
+    detections = db.query(WasteDetection).filter(
+        WasteDetection.user_id == user_id
+    ).order_by(WasteDetection.date_taken.desc()).offset(skip).limit(limit).all()
+    
+    if not detections and skip == 0:
         user = db.query(User).filter(User.id == user_id).first()
         if not user:
             raise HTTPException(status_code=404, detail=f"User not found with id: {user_id}")
+        # Add header even for empty results
+        if response:
+            response.headers["X-Total-Count"] = "0"
         return []
+    
     response_list = []
     for det in detections:
         try:
@@ -321,6 +344,11 @@ async def get_detections_by_user_from_db_service(user_id: str, skip: int = 0, li
             collected_by=det.collected_by,
             collection_date=det.collection_date
         ))
+    
+    # Add total count header
+    if response:
+        response.headers["X-Total-Count"] = str(total_count)
+    
     return response_list
 
 @app.get("/detections/id/{detection_id}", response_model=WasteDetectionResponse)
