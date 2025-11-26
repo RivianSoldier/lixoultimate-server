@@ -1,5 +1,5 @@
 from fastapi import FastAPI, HTTPException, Depends, Request
-from fastapi.responses import RedirectResponse
+from fastapi.responses import RedirectResponse, StreamingResponse
 from pydantic import BaseModel
 from dotenv import load_dotenv
 import json
@@ -7,12 +7,16 @@ import os
 from typing import List, Optional, Any
 import base64
 import io
+import csv
+import time
 from PIL import Image
 from sqlalchemy import create_engine, Column, Float, String, Integer, ForeignKey
 from sqlalchemy.orm import sessionmaker, Session, relationship
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.types import JSON
 from datetime import datetime
+from geopy.geocoders import Nominatim
+from geopy.exc import GeocoderTimedOut, GeocoderServiceError
 
 
 from fastapi.middleware.cors import CORSMiddleware
@@ -72,6 +76,54 @@ def get_db():
         yield db
     finally:
         db.close()
+
+# Initialize geocoder for address conversion
+geolocator = Nominatim(user_agent="lixoultimate-server")
+
+def get_address_from_coordinates(lat: float, lng: float, timeout: int = 3) -> str:
+    """
+    Convert latitude and longitude to a readable address.
+    Returns formatted address or coordinates if geocoding fails.
+    Uses a shorter timeout to prevent worker timeouts.
+    """
+    try:
+        location = geolocator.reverse(f"{lat}, {lng}", timeout=timeout, language='pt')
+        if location and location.address:
+            return location.address
+        return f"{lat}, {lng}"
+    except (GeocoderTimedOut, GeocoderServiceError, Exception) as e:
+        print(f"Geocoding error for {lat}, {lng}: {e}")
+        return f"{lat}, {lng}"
+
+def format_classes_for_csv(detection_points: dict) -> str:
+    """
+    Extract and format class counts from detection_points for CSV export.
+    Returns formatted string like "Papel: 5, Plástico: 3"
+    """
+    if not detection_points or not isinstance(detection_points, dict):
+        return "Lixo: 1"
+    
+    class_counts = {"papel": 0, "plastico": 0, "vidro": 0, "metal": 0}
+    
+    if "class_counts" in detection_points:
+        stored_counts = detection_points["class_counts"]
+        for class_name in ["papel", "plastico", "vidro", "metal"]:
+            class_counts[class_name] = stored_counts.get(class_name, 0)
+    
+    # Build formatted string
+    class_name_map = {
+        "papel": "Papel",
+        "plastico": "Plástico",
+        "vidro": "Vidro",
+        "metal": "Metal"
+    }
+    
+    parts = []
+    for class_name, count in class_counts.items():
+        if count > 0:
+            parts.append(f"{class_name_map[class_name]}: {count}")
+    
+    return ", ".join(parts) if parts else "Lixo: 1"
 
 def compress_base64_image(base64_str: str, quality: int = 60, max_size: tuple = (1024, 1024)) -> str:
     """
@@ -609,3 +661,164 @@ async def get_collector_activity(collector_id: str, skip: int = 0, limit: int = 
         ))
     
     return response_list
+
+@app.get("/collections/user/{user_id}/export")
+async def export_user_collections(user_id: str, db: Session = Depends(get_db)):
+    """
+    Export user's collection history as CSV file.
+    Returns CSV with columns: Data, Hora, Endereço, Classes, Status, Latitude, Longitude.
+    All text in Portuguese for user convenience.
+    Note: user_id can be any collector ID, doesn't need to be a registered user.
+    """
+    # Get all detections collected or marked as not found by this user
+    from sqlalchemy import or_
+    detections = db.query(WasteDetection).filter(
+        or_(
+            WasteDetection.collected_by == user_id,
+            WasteDetection.not_found_by == user_id
+        )
+    ).all()
+    
+    # Create CSV in memory with UTF-8 BOM
+    output = io.StringIO()
+    output.write('\ufeff')  # UTF-8 BOM for Excel compatibility
+    writer = csv.writer(output, delimiter=';')
+    
+    # Write header
+    writer.writerow(["Data Detecção", "Data Status", "Hora Status", "Endereço", "Classes", "Status", "Latitude", "Longitude"])
+    
+    # Write data rows
+    for det in detections:
+        # Determine the action date (status change date)
+        action_date = None
+        if det.status == "Coletado" and det.collection_date:
+            action_date = det.collection_date
+        elif det.status == "Não encontrado" and det.not_found_date:
+            action_date = det.not_found_date
+        
+        if action_date:
+            try:
+                # Parse ISO datetime
+                dt = datetime.fromisoformat(action_date)
+                status_date_str = dt.strftime("%d/%m/%Y")
+                status_time_str = dt.strftime("%H:%M:%S")
+            except:
+                status_date_str = action_date.split("T")[0] if "T" in action_date else action_date
+                status_time_str = action_date.split("T")[1].split(".")[0] if "T" in action_date else "--:--:--"
+        else:
+            status_date_str = "--/--/----"
+            status_time_str = "--:--:--"
+        
+        # Format detection date
+        try:
+            detection_dt = datetime.fromisoformat(det.date_taken)
+            detection_date_str = detection_dt.strftime("%d/%m/%Y")
+        except:
+            detection_date_str = det.date_taken.split("T")[0] if "T" in det.date_taken else det.date_taken
+        
+        # Get address from coordinates
+        address = get_address_from_coordinates(det.latitude, det.longitude)
+        time.sleep(1)  # Respect Nominatim's rate limit (1 request per second)
+        
+        # Format classes
+        classes_str = format_classes_for_csv(det.detection_points)
+        
+        # Write row
+        writer.writerow([
+            detection_date_str,
+            status_date_str,
+            status_time_str,
+            address,
+            classes_str,
+            det.status,
+            f"{det.latitude:.6f}",
+            f"{det.longitude:.6f}"
+        ])
+    
+    # Prepare response
+    output.seek(0)
+    filename = f"historico_coletas_{user_id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+    
+    return StreamingResponse(
+        iter([output.getvalue()]),
+        media_type="text/csv",
+        headers={"Content-Disposition": f"attachment; filename={filename}"}
+    )
+
+@app.get("/collections/export")
+async def export_all_collections(db: Session = Depends(get_db)):
+    """
+    Export all collections history as anonymized CSV file.
+    Returns CSV without user identification for data protection.
+    Columns: Data, Hora, Endereço, Classes, Status, Latitude, Longitude.
+    """
+    # Get all detections that have been collected or marked as not found
+    detections = db.query(WasteDetection).filter(
+        WasteDetection.status.in_(["Coletado", "Não encontrado"])
+    ).all()
+    
+    # Create CSV in memory with UTF-8 BOM
+    output = io.StringIO()
+    output.write('\ufeff')  # UTF-8 BOM for Excel compatibility
+    writer = csv.writer(output, delimiter=';')
+    
+    # Write header
+    writer.writerow(["Data Detecção", "Data Status", "Hora Status", "Endereço", "Classes", "Status", "Latitude", "Longitude"])
+    
+    # Write data rows
+    for det in detections:
+        # Determine the action date (status change date)
+        action_date = None
+        if det.status == "Coletado" and det.collection_date:
+            action_date = det.collection_date
+        elif det.status == "Não encontrado" and det.not_found_date:
+            action_date = det.not_found_date
+        
+        if action_date:
+            try:
+                # Parse ISO datetime
+                dt = datetime.fromisoformat(action_date)
+                status_date_str = dt.strftime("%d/%m/%Y")
+                status_time_str = dt.strftime("%H:%M:%S")
+            except:
+                status_date_str = action_date.split("T")[0] if "T" in action_date else action_date
+                status_time_str = action_date.split("T")[1].split(".")[0] if "T" in action_date else "--:--:--"
+        else:
+            status_date_str = "--/--/----"
+            status_time_str = "--:--:--"
+        
+        # Format detection date
+        try:
+            detection_dt = datetime.fromisoformat(det.date_taken)
+            detection_date_str = detection_dt.strftime("%d/%m/%Y")
+        except:
+            detection_date_str = det.date_taken.split("T")[0] if "T" in det.date_taken else det.date_taken
+        
+        # Get address from coordinates
+        address = get_address_from_coordinates(det.latitude, det.longitude)
+        time.sleep(1)  # Respect Nominatim's rate limit (1 request per second)
+        
+        # Format classes
+        classes_str = format_classes_for_csv(det.detection_points)
+        
+        # Write row (no user identification)
+        writer.writerow([
+            detection_date_str,
+            status_date_str,
+            status_time_str,
+            address,
+            classes_str,
+            det.status,
+            f"{det.latitude:.6f}",
+            f"{det.longitude:.6f}"
+        ])
+    
+    # Prepare response
+    output.seek(0)
+    filename = f"historico_coletas_global_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+    
+    return StreamingResponse(
+        iter([output.getvalue()]),
+        media_type="text/csv",
+        headers={"Content-Disposition": f"attachment; filename={filename}"}
+    )
