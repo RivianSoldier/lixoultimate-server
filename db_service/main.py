@@ -27,7 +27,7 @@ app = FastAPI()
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # In production, replace with specific origins
+    allow_origins=["*"],  
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -60,11 +60,9 @@ class WasteDetection(Base):
     status = Column(String, index=True)
     detection_points = Column(JSON, nullable=True)
     
-    # Existing columns
     collected_by = Column(String, ForeignKey("users.id"), nullable=True, index=True)
     collection_date = Column(String, nullable=True)
 
-    # --- ADD THESE TWO LINES ---
     not_found_by = Column(String, ForeignKey("users.id"), nullable=True, index=True)
     not_found_date = Column(String, nullable=True)
 
@@ -77,7 +75,6 @@ def get_db():
     finally:
         db.close()
 
-# Initialize geocoder for address conversion
 geolocator = Nominatim(user_agent="lixoultimate-server")
 
 def get_address_from_coordinates(lat: float, lng: float, timeout: int = 3) -> str:
@@ -110,7 +107,6 @@ def format_classes_for_csv(detection_points: dict) -> str:
         for class_name in ["papel", "plastico", "vidro", "metal"]:
             class_counts[class_name] = stored_counts.get(class_name, 0)
     
-    # Build formatted string
     class_name_map = {
         "papel": "Papel",
         "plastico": "Plástico",
@@ -165,12 +161,10 @@ def compress_base64_image(base64_str: str, quality: int = 60, max_size: tuple = 
         
         compressed_base64 = base64.b64encode(buffer.read()).decode('utf-8')
         
-        # Return just the base64 string without prefix (frontend will add it if needed)
         return compressed_base64
     
     except Exception as e:
         print(f"Image compression failed: {e}")
-        # Return original format on error - strip prefix if present
         if base64_str.startswith('data:image'):
             return base64_str.split(',', 1)[1]
         return base64_str
@@ -233,7 +227,7 @@ class WasteDetectionMapResponse(BaseModel):
     foto: str
     classes: List[ClassCount]
     detection_points: Optional[Any] = None
-    date: str  # Campo de data adicionado para o frontend
+    date: str  
 
     class Config:
         from_attributes = True
@@ -305,10 +299,8 @@ async def get_detections_by_user_from_db_service(
     Use skip/limit params for pagination (e.g., skip=10 for next 10 items).
     Returns X-Total-Count header with total number of detections.
     """
-    # Get total count for response header
     total_count = db.query(WasteDetection).filter(WasteDetection.user_id == user_id).count()
     
-    # Query with ordering by date_taken DESC (newest first)
     detections = db.query(WasteDetection).filter(
         WasteDetection.user_id == user_id
     ).order_by(WasteDetection.date_taken.desc()).offset(skip).limit(limit).all()
@@ -317,7 +309,6 @@ async def get_detections_by_user_from_db_service(
         user = db.query(User).filter(User.id == user_id).first()
         if not user:
             raise HTTPException(status_code=404, detail=f"User not found with id: {user_id}")
-        # Add header even for empty results
         if response:
             response.headers["X-Total-Count"] = "0"
         return []
@@ -345,7 +336,6 @@ async def get_detections_by_user_from_db_service(
             collection_date=det.collection_date
         ))
     
-    # Add total count header
     if response:
         response.headers["X-Total-Count"] = str(total_count)
     
@@ -454,7 +444,7 @@ async def get_detections_for_map(status_value: str, skip: int = 0, limit: int = 
             foto=compressed_image,
             classes=classes,
             detection_points=det.detection_points,
-            date=det.date_taken  # Adicionando o campo de data da detecção
+            date=det.date_taken  
         ))
     
     return response_list
@@ -467,19 +457,16 @@ async def collect_waste(detection_id: str, request: CollectionRequest, db: Sessi
     This action is permanent and cannot be undone.
     Collector does not need to be a registered user.
     """
-    # Verify detection exists
     detection = db.query(WasteDetection).filter(WasteDetection.id == detection_id).first()
     if not detection:
         raise HTTPException(status_code=404, detail=f"Detection not found: {detection_id}")
     
-    # Verify status is "A coletar"
     if detection.status != "A coletar":
         raise HTTPException(
             status_code=400, 
             detail=f"Cannot collect detection with status '{detection.status}'. Only 'A coletar' detections can be collected."
         )
     
-    # Update detection status and collection info
     detection.status = "Coletado"
     detection.collected_by = request.collector_user_id
     detection.collection_date = datetime.now().isoformat()
@@ -509,19 +496,16 @@ async def mark_detection_not_found(detection_id: str, request: CollectionRequest
     Changes status to 'Não encontrado' and records user info.
     This action is permanent and cannot be undone.
     """
-    # Verify detection exists
     detection = db.query(WasteDetection).filter(WasteDetection.id == detection_id).first()
     if not detection:
         raise HTTPException(status_code=404, detail=f"Detection not found: {detection_id}")
 
-    # Verify status is "A coletar"
     if detection.status != "A coletar":
         raise HTTPException(
             status_code=400,
             detail=f"Cannot mark detection as not found with status '{detection.status}'. Only 'A coletar' detections can be marked as not found."
         )
 
-    # Update detection status and not found info
     detection.status = "Não encontrado"
     detection.not_found_by = request.collector_user_id
     detection.not_found_date = datetime.now().isoformat()
@@ -550,12 +534,10 @@ async def get_user_collections(user_id: str, skip: int = 0, limit: int = 100, db
     Get all waste detections collected by a specific user.
     Returns personalized collection history.
     """
-    # Verify user exists
     user = db.query(User).filter(User.id == user_id).first()
     if not user:
         raise HTTPException(status_code=404, detail=f"User not found: {user_id}")
     
-    # Get all detections collected by this user
     detections = db.query(WasteDetection).filter(
         WasteDetection.collected_by == user_id
     ).offset(skip).limit(limit).all()
@@ -628,7 +610,6 @@ async def get_collector_activity(collector_id: str, skip: int = 0, limit: int = 
     """
     from sqlalchemy import or_
     
-    # Get all detections where this person was the collector or marked as not found
     detections = db.query(WasteDetection).filter(
         or_(
             WasteDetection.collected_by == collector_id,
@@ -638,7 +619,6 @@ async def get_collector_activity(collector_id: str, skip: int = 0, limit: int = 
     
     response_list = []
     for det in detections:
-        # Extract class counts from detection_points
         class_counts = {"papel": 0, "plastico": 0, "vidro": 0, "metal": 0}
         
         if det.detection_points and isinstance(det.detection_points, dict):
@@ -647,7 +627,6 @@ async def get_collector_activity(collector_id: str, skip: int = 0, limit: int = 
                 for class_name in ["papel", "plastico", "vidro", "metal"]:
                     class_counts[class_name] = stored_counts.get(class_name, 0)
         
-        # Build classes list (only include classes with count > 0)
         classes = []
         class_name_map = {
             "papel": "Papel",
@@ -662,14 +641,11 @@ async def get_collector_activity(collector_id: str, skip: int = 0, limit: int = 
                     quantidade=count
                 ))
         
-        # If no classes detected, add a generic "Lixo" entry
         if not classes:
             classes.append(ClassCount(nome="Lixo", quantidade=1))
         
-        # Compress image for frontend
         compressed_image = compress_base64_image(det.base64, quality=50, max_size=(800, 800))
         
-        # Determine the action date (collection_date or not_found_date)
         data_coletado = None
         if det.status == "Coletado" and det.collection_date:
             data_coletado = det.collection_date
@@ -698,7 +674,6 @@ async def export_user_collections(user_id: str, db: Session = Depends(get_db)):
     All text in Portuguese for user convenience.
     Note: user_id can be any collector ID, doesn't need to be a registered user.
     """
-    # Get all detections collected or marked as not found by this user
     from sqlalchemy import or_
     detections = db.query(WasteDetection).filter(
         or_(
@@ -707,17 +682,13 @@ async def export_user_collections(user_id: str, db: Session = Depends(get_db)):
         )
     ).all()
     
-    # Create CSV in memory with UTF-8 BOM
     output = io.StringIO()
-    output.write('\ufeff')  # UTF-8 BOM for Excel compatibility
+    output.write('\ufeff')
     writer = csv.writer(output, delimiter=';')
     
-    # Write header
     writer.writerow(["Data Detecção", "Data Status", "Hora Status", "Endereço", "Classes", "Status", "Latitude", "Longitude"])
     
-    # Write data rows
     for det in detections:
-        # Determine the action date (status change date)
         action_date = None
         if det.status == "Coletado" and det.collection_date:
             action_date = det.collection_date
@@ -726,7 +697,6 @@ async def export_user_collections(user_id: str, db: Session = Depends(get_db)):
         
         if action_date:
             try:
-                # Parse ISO datetime
                 dt = datetime.fromisoformat(action_date)
                 status_date_str = dt.strftime("%d/%m/%Y")
                 status_time_str = dt.strftime("%H:%M:%S")
@@ -737,21 +707,17 @@ async def export_user_collections(user_id: str, db: Session = Depends(get_db)):
             status_date_str = "--/--/----"
             status_time_str = "--:--:--"
         
-        # Format detection date
         try:
             detection_dt = datetime.fromisoformat(det.date_taken)
             detection_date_str = detection_dt.strftime("%d/%m/%Y")
         except:
             detection_date_str = det.date_taken.split("T")[0] if "T" in det.date_taken else det.date_taken
         
-        # Get address from coordinates
         address = get_address_from_coordinates(det.latitude, det.longitude)
-        time.sleep(1)  # Respect Nominatim's rate limit (1 request per second)
+        time.sleep(1)
         
-        # Format classes
         classes_str = format_classes_for_csv(det.detection_points)
         
-        # Write row
         writer.writerow([
             detection_date_str,
             status_date_str,
@@ -763,7 +729,6 @@ async def export_user_collections(user_id: str, db: Session = Depends(get_db)):
             f"{det.longitude:.6f}"
         ])
     
-    # Prepare response
     output.seek(0)
     filename = f"historico_coletas_{user_id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
     
@@ -780,22 +745,17 @@ async def export_all_collections(db: Session = Depends(get_db)):
     Returns CSV without user identification for data protection.
     Columns: Data, Hora, Endereço, Classes, Status, Latitude, Longitude.
     """
-    # Get all detections that have been collected or marked as not found
     detections = db.query(WasteDetection).filter(
         WasteDetection.status.in_(["Coletado", "Não encontrado"])
     ).all()
     
-    # Create CSV in memory with UTF-8 BOM
     output = io.StringIO()
-    output.write('\ufeff')  # UTF-8 BOM for Excel compatibility
+    output.write('\ufeff')
     writer = csv.writer(output, delimiter=';')
     
-    # Write header
     writer.writerow(["Data Detecção", "Data Status", "Hora Status", "Endereço", "Classes", "Status", "Latitude", "Longitude"])
     
-    # Write data rows
     for det in detections:
-        # Determine the action date (status change date)
         action_date = None
         if det.status == "Coletado" and det.collection_date:
             action_date = det.collection_date
@@ -804,7 +764,6 @@ async def export_all_collections(db: Session = Depends(get_db)):
         
         if action_date:
             try:
-                # Parse ISO datetime
                 dt = datetime.fromisoformat(action_date)
                 status_date_str = dt.strftime("%d/%m/%Y")
                 status_time_str = dt.strftime("%H:%M:%S")
@@ -815,21 +774,17 @@ async def export_all_collections(db: Session = Depends(get_db)):
             status_date_str = "--/--/----"
             status_time_str = "--:--:--"
         
-        # Format detection date
         try:
             detection_dt = datetime.fromisoformat(det.date_taken)
             detection_date_str = detection_dt.strftime("%d/%m/%Y")
         except:
             detection_date_str = det.date_taken.split("T")[0] if "T" in det.date_taken else det.date_taken
         
-        # Get address from coordinates
         address = get_address_from_coordinates(det.latitude, det.longitude)
-        time.sleep(1)  # Respect Nominatim's rate limit (1 request per second)
+        time.sleep(1)
         
-        # Format classes
         classes_str = format_classes_for_csv(det.detection_points)
         
-        # Write row (no user identification)
         writer.writerow([
             detection_date_str,
             status_date_str,
@@ -841,7 +796,6 @@ async def export_all_collections(db: Session = Depends(get_db)):
             f"{det.longitude:.6f}"
         ])
     
-    # Prepare response
     output.seek(0)
     filename = f"historico_coletas_global_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
     
