@@ -65,8 +65,30 @@ class WasteDetection(Base):
 
     not_found_by = Column(String, ForeignKey("users.id"), nullable=True, index=True)
     not_found_date = Column(String, nullable=True)
+    
+    # Cached address from geocoding
+    address = Column(String, nullable=True)
 
 Base.metadata.create_all(engine)
+
+# Migration: Add 'address' column if it doesn't exist
+def migrate_add_address_column():
+    """Add the address column to waste_detections if it doesn't exist."""
+    from sqlalchemy import inspect, text
+    inspector = inspect(engine)
+    columns = [col['name'] for col in inspector.get_columns('waste_detections')]
+    if 'address' not in columns:
+        with engine.connect() as conn:
+            conn.execute(text('ALTER TABLE waste_detections ADD COLUMN address VARCHAR'))
+            conn.commit()
+            print("Migration: Added 'address' column to waste_detections")
+    else:
+        print("Migration: 'address' column already exists")
+
+try:
+    migrate_add_address_column()
+except Exception as e:
+    print(f"Migration check: {e}")
 
 def get_db():
     db = SessionLocal()
@@ -91,6 +113,29 @@ def get_address_from_coordinates(lat: float, lng: float, timeout: int = 3) -> st
     except (GeocoderTimedOut, GeocoderServiceError, Exception) as e:
         print(f"Geocoding error for {lat}, {lng}: {e}")
         return f"{lat}, {lng}"
+
+def get_or_cache_address(detection: "WasteDetection", db: "Session") -> tuple:
+    """
+    Get cached address from detection or geocode and cache it.
+    This prevents repeated geocoding calls for the same detection.
+    Returns (address, was_geocoded) tuple.
+    """
+    # If we already have a cached address, return it immediately
+    if detection.address:
+        return (detection.address, False)
+    
+    # Geocode the address
+    address = get_address_from_coordinates(detection.latitude, detection.longitude)
+    
+    # Cache the address in the database
+    try:
+        detection.address = address
+        db.commit()
+    except Exception as e:
+        print(f"Failed to cache address: {e}")
+        db.rollback()
+    
+    return (address, True)
 
 def format_classes_for_csv(detection_points: dict) -> str:
     """
@@ -673,6 +718,7 @@ async def export_user_collections(user_id: str, db: Session = Depends(get_db)):
     Returns CSV with columns: Data, Hora, Endereço, Classes, Status, Latitude, Longitude.
     All text in Portuguese for user convenience.
     Note: user_id can be any collector ID, doesn't need to be a registered user.
+    Uses cached addresses to avoid geocoding timeouts.
     """
     from sqlalchemy import or_
     detections = db.query(WasteDetection).filter(
@@ -687,6 +733,10 @@ async def export_user_collections(user_id: str, db: Session = Depends(get_db)):
     writer = csv.writer(output, delimiter=';')
     
     writer.writerow(["Data Detecção", "Data Status", "Hora Status", "Endereço", "Classes", "Status", "Latitude", "Longitude"])
+    
+    # Count how many need geocoding vs cached
+    needs_geocoding = sum(1 for det in detections if not det.address)
+    print(f"User export: {len(detections)} total, {needs_geocoding} need geocoding")
     
     for det in detections:
         action_date = None
@@ -713,8 +763,12 @@ async def export_user_collections(user_id: str, db: Session = Depends(get_db)):
         except:
             detection_date_str = det.date_taken.split("T")[0] if "T" in det.date_taken else det.date_taken
         
-        address = get_address_from_coordinates(det.latitude, det.longitude)
-        time.sleep(1)
+        # Use cached address or geocode and cache
+        address, was_geocoded = get_or_cache_address(det, db)
+        
+        # Only rate-limit if we actually geocoded
+        if was_geocoded:
+            time.sleep(0.5)  # Rate limit only for new geocoding calls
         
         classes_str = format_classes_for_csv(det.detection_points)
         
@@ -744,6 +798,7 @@ async def export_all_collections(db: Session = Depends(get_db)):
     Export all collections history as anonymized CSV file.
     Returns CSV without user identification for data protection.
     Columns: Data, Hora, Endereço, Classes, Status, Latitude, Longitude.
+    Uses cached addresses to avoid geocoding timeouts.
     """
     detections = db.query(WasteDetection).filter(
         WasteDetection.status.in_(["Coletado", "Não encontrado"])
@@ -754,6 +809,10 @@ async def export_all_collections(db: Session = Depends(get_db)):
     writer = csv.writer(output, delimiter=';')
     
     writer.writerow(["Data Detecção", "Data Status", "Hora Status", "Endereço", "Classes", "Status", "Latitude", "Longitude"])
+    
+    # Count how many need geocoding vs cached
+    needs_geocoding = sum(1 for det in detections if not det.address)
+    print(f"Export: {len(detections)} total, {needs_geocoding} need geocoding, {len(detections) - needs_geocoding} cached")
     
     for det in detections:
         action_date = None
@@ -780,8 +839,12 @@ async def export_all_collections(db: Session = Depends(get_db)):
         except:
             detection_date_str = det.date_taken.split("T")[0] if "T" in det.date_taken else det.date_taken
         
-        address = get_address_from_coordinates(det.latitude, det.longitude)
-        time.sleep(1)
+        # Use cached address or geocode and cache
+        address, was_geocoded = get_or_cache_address(det, db)
+        
+        # Only rate-limit if we actually geocoded
+        if was_geocoded:
+            time.sleep(0.5)  # Rate limit only for new geocoding calls
         
         classes_str = format_classes_for_csv(det.detection_points)
         

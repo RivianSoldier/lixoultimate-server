@@ -32,4 +32,4 @@ ENV PATH="/opt/venv/bin:$PATH"
 
 EXPOSE 5001
 
-CMD ["gunicorn", "-w", "2", "-k", "uvicorn.workers.UvicornWorker", "main:app", "--bind", "0.0.0.0:5001", "--timeout", "60"]
+CMD ["gunicorn", "-w", "2", "-k", "uvicorn.workers.UvicornWorker", "main:app", "--bind", "0.0.0.0:5001", "--timeout", "120"]
